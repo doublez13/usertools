@@ -1,0 +1,82 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+import ldap
+import sys
+import signal
+
+server     = 'ldap://ldap.eng.utah.edu'
+srch_base  = 'ou=Group,o=eng.utah.edu'
+attributes = ['cn',
+              'gidNumber', 
+              'memberUid']
+
+
+def sig_handler(signal, frame):
+      print '\n'
+      sys.exit(0)
+
+
+def selectGrp():
+  srch_grp = raw_input('Lookup entry for group (blank to end): ')
+  if srch_grp == "":
+    sys.exit(0)
+  return srch_grp
+
+
+def searchGrp(srch_filter, ldap_connection):
+  result = ldap_connection.search_s(srch_base, ldap.SCOPE_SUBTREE, srch_filter, attributes )
+  found = False
+  for entry in result:
+    found = True
+    keys   = entry[1].keys()
+    values = []
+    for attribute in attributes:
+      if attribute == "memberUid":
+        if attribute in keys:
+          values.append( str(entry[1][attribute]).translate(None, "[']") )
+        else:
+          values.append("")
+      else:  
+        values.append( entry[1][attribute][0] if attribute in keys else "")
+    for x in range (0, len(attributes)):
+      whitespace = " " * (20-len(attributes[x])-len(str(x+1)))
+      print(whitespace+attributes[x]+": "+values[x])
+    print "-" * 51
+  return found
+
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+ldap_conn=ldap.initialize(server)
+
+if len(sys.argv) < 2:
+  srch_grp = selectGrp()
+else:
+  srch_grp = sys.argv[1]
+
+
+print "*" * 51 + '\r'
+filter = '(cn=*'+srch_grp+'*)'
+s1 =searchGrp(filter, ldap_conn)
+filter = '(gidNumber='+srch_grp+')'
+s2 = searchGrp(filter, ldap_conn)
+if not s1 and not s2:
+  print " " * 17 + "No groups found" 
+print "*" * 51 + '\n'

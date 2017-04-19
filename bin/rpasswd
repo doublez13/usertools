@@ -1,0 +1,98 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+import ldap
+import getpass
+import sys
+import os
+import readline
+import signal
+import crypt
+import random
+import string
+import cracklib
+import re
+from termcolor import cprint
+
+server     = 'ldap://ldap.eng.utah.edu'
+bind_base  = 'ou=people,o=eng.utah.edu'
+srch_base  = 'ou=people,o=eng.utah.edu'
+username   = os.getenv('USER')
+attributes = ['remotePassword']
+
+
+def sig_handler(signal, frame):
+      print '\n'
+      sys.exit(0)
+
+
+def modifyPassword(user, attribute, ldap_connection):
+  cprint("\nPasswords must be at least 8 characters long.", "yellow")
+  cprint("Passwords must contain upper and lower case characters.", "yellow")
+  cprint("Passwords must contain digits.", "yellow")
+  user_base = "uid="+user+","+srch_base
+  while 1:
+    new_pw1 = getpass.getpass("Please enter a password: ")
+    new_pw2 = getpass.getpass("Please confirm password: ")
+    if new_pw1 != new_pw2:
+      cprint("Passwords don't match", "red")
+      continue
+    if chkPassStrength(new_pw1) == False:
+      continue
+    chars = string.ascii_letters + string.digits
+    salt = "".join(random.choice(chars) for i in range(8))
+    pw_hash = "{crypt}"+crypt.crypt(new_pw1, salt) 
+    mod_attrs = [(ldap.MOD_REPLACE, attribute, pw_hash)]
+    ldap_connection.modify_s(user_base, mod_attrs)
+    break
+
+
+def chkPassStrength(pw_to_check):
+  try:
+    cracklib.FascistCheck(pw_to_check)
+  except ValueError, e:
+    cprint("Error: " + str(e), "red")
+    return False
+  if len(pw_to_check) < 8:
+    cprint("Error: password too short", "red")
+    return False
+  elif pw_to_check.islower() or pw_to_check.isupper():
+    cprint("Error: password must contain upper and lower case characters", "red")
+    return False
+  elif not bool(re.compile('\d').search(pw_to_check)):
+    cprint("Error: password must contain digits", "red")
+    return False
+  return True
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+cprint("This program allows you to set or reset your password for", "cyan")
+cprint("CADE's remote services, which are currently Email and FTP.", "cyan")
+
+password = getpass.getpass("Linux password: ")
+ldap_conn=ldap.initialize(server)
+ldap_conn.start_tls_s()
+try:
+  ldap_conn.bind_s("uid="+username+","+bind_base,password)
+except (ldap.INVALID_CREDENTIALS, ldap.UNWILLING_TO_PERFORM):
+  cprint("Couldn't connect to " + server + ". Invalid Credentials", "red")
+  sys.exit(1)
+
+modifyPassword(username, attributes[0], ldap_conn)
+cprint("Remote Password Successfully Updated\n", "cyan")

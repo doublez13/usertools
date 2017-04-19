@@ -1,0 +1,192 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+import ldap
+import getpass
+import sys
+import os
+import readline
+import signal
+import string
+import re
+
+server     = 'ldap://ldap.eng.utah.edu'
+bind_base  = 'ou=people,o=eng.utah.edu'
+srch_base  = 'ou=Group,o=eng.utah.edu'
+username   = os.getenv('USER')
+attributes = ['cn',
+              'gidNumber',
+              'memberUid',
+              'owner',
+              'ttl',
+              'description']
+
+
+def sig_handler(signal, frame):
+      print '\n'
+      sys.exit(0)
+
+
+def yesNo(question):
+  valid_yes = set([ 'Y', 'y', "Yes", "yes", '1'])
+  valid_no = set([ 'N', 'n', "No", "no", '0'])
+  while 1:
+    answer = raw_input('\033[93m' + question + '\033[0m')
+    if answer in valid_yes:
+      return True
+    elif answer in valid_no:
+      return False
+
+
+def selection():
+  op=""
+  while op=="":
+    valid_chars = set(['C', 'c', 'D', 'd', 'E', 'e'])
+    op = raw_input("Selection? ")
+    if op.isdigit() and int(op) <= len(attributes) and int(op) > 0:
+      return op
+    elif op in valid_chars:
+      return op
+    else:
+      op=""
+
+
+def selectGroup():
+  mod_group = raw_input('Lookup entry for group (blank to end): ')
+  if mod_group == "":
+    sys.exit(0)
+  return mod_group
+
+
+def modifyAttribute(group, attribute, ldap_connection, pre_val):
+  readline.set_startup_hook(lambda: readline.insert_text(pre_val))
+  value = raw_input(attribute+": ")
+  readline.set_startup_hook()
+  if yesNo("Are you sure you want to change " + attribute + " to value: '" + value +"'?: "):
+    group_base = "cn="+group+","+srch_base
+    mod_attrs = [()]
+    if value == pre_val:
+      return
+    if attribute == "memberUid":
+      value = filter(None, value.replace(" ", "").split(","))
+      if not checkValidity(value, ldap_connection):
+        return
+    elif attribute == "owner":
+      value=value.lower()
+      if "uid=" not in value and bind_base not in value:
+        value = "uid="+value+","+bind_base
+      elif ("uid=" in value) != (bind_base in value): #XOR
+        print '\033[91m' + "Invalid user name format" + '\033[0m'
+        return
+      if not checkValidity(value.split("=")[1].split(",")[0].split(","), ldap_connection):
+        return
+    if value == "":
+      mod_attrs = [(ldap.MOD_DELETE, attribute, pre_val)]
+    else:
+      mod_attrs = [(ldap.MOD_REPLACE, attribute, value)]
+    try:
+      ldap_connection.modify_s(group_base, mod_attrs)
+    except ldap.INSUFFICIENT_ACCESS:
+      print '\033[91m' + "Insufficient Access" + '\033[0m'
+    except ldap.INVALID_SYNTAX:
+      print '\033[91m' + "Invalid Syntax" + '\033[0m'
+
+
+def deleteGroup(group, ldap_connection):
+  group_base = "cn="+group+","+srch_base
+  if yesNo("Are you sure you want to delete group: " + group +"?: "):
+    try:
+      ldap_connection.delete_s(group_base)
+    except ldap.INSUFFICIENT_ACCESS:
+      print '\033[91m' + "Regular users cannot delete groups" + '\033[0m'
+      return
+    print "Group " + group + " deleted"
+
+
+def checkValidity(users, ldap_connection):
+  for user in users:
+    srch_filter = '(uid='+user+')'
+    srch_res    = ldap_connection.search_s(bind_base, ldap.SCOPE_SUBTREE, srch_filter )
+    if srch_res == []:
+      print '\033[91m' + user + " is not a valid user" + '\033[0m'
+      return False
+  return True
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+password = getpass.getpass()
+ldap_conn=ldap.initialize(server)
+ldap_conn.start_tls_s()
+try:
+  ldap_conn.bind_s("uid="+username+","+bind_base,password)
+except (ldap.INVALID_CREDENTIALS, ldap.UNWILLING_TO_PERFORM):
+  print '\033[91m' + "Couldn't connect to "+server+". Invalid Credentials" +  '\033[0m'
+  sys.exit(1)
+
+
+if len(sys.argv) < 2:
+  mod_group = selectGroup()
+else:
+  mod_group = sys.argv[1]
+
+
+while 1:
+  srch_filter = '(cn='+mod_group+')'
+  result = ldap_conn.search_s(srch_base, ldap.SCOPE_SUBTREE, srch_filter, attributes )
+  if result == []:
+    print '\033[91m' + "Unable to find LDAP entry for " + mod_group + '\033[0m' + '\n'
+    mod_group = selectGroup() 
+    continue
+  else:
+    print "Found LDAP entry for " + mod_group + '\n'
+
+
+  keys   = result[0][1].keys()
+  values = []
+
+  for attribute in attributes:
+    if attribute == "memberUid":
+      if attribute in keys:
+        values.append( str(result[0][1][attribute]).translate(None, "[']") )
+      else:
+        values.append("")
+    else:
+      values.append( result[0][1][attribute][0] if attribute in keys else "")
+  for x in range (0, len(attributes)):
+    whitespace = " " * (20-len(attributes[x])-len(str(x+1)))
+    print(str(x+1)+")"+whitespace+attributes[x]+": "+str(values[x]))
+  print("D)elete this group")
+  print("C)hange group")
+  print("E)xit\n")
+
+
+  operation = selection()
+
+  if operation == 'E' or operation == 'e':
+    if yesNo("Are you sure you want to quit? "):
+      sys.exit(0)
+  elif operation == 'C' or operation == 'c':
+    mod_group = selectGroup()
+  elif operation == 'D' or operation == 'd':
+      deleteGroup(mod_group, ldap_conn)
+  else:
+    attribute=attributes[int(operation)-1]
+    old_value = values[attributes.index(attribute)]
+    modifyAttribute(mod_group, attribute, ldap_conn, old_value)
+  print '\n'

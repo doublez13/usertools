@@ -1,0 +1,193 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+import ldap
+import getpass
+import sys
+import os
+import readline
+import signal
+import string
+import re
+from termcolor import cprint
+
+
+server     = 'ldap://ldap.eng.utah.edu'
+bind_base  = 'ou=people,o=eng.utah.edu'
+srch_base  = 'ou=group,o=eng.utah.edu'
+username   = os.getenv('USER')
+minGID     = 1000 
+maxGID     = 3000
+skip       = 5
+attributes = ['cn',
+              'gidNumber',
+              'memberUid',
+              'owner',
+              'ttl',
+              'description']
+
+
+def sig_handler(signal, frame):
+  print '\n'
+  sys.exit(0)
+
+
+def yesNo(question):
+  valid_yes = set([ 'Y', 'y', "Yes", "yes", '1'])
+  valid_no = set([ 'N', 'n', "No", "no", '0'])
+  while 1:
+    answer = raw_input('\033[93m' + question + '\033[0m')
+    if answer in valid_yes:
+      return True
+    elif answer in valid_no:
+      return False
+
+
+def checkValidity(users, ldap_connection):
+  for user in users:
+    srch_filter = '(uid='+user+')'
+    srch_res    = ldap_connection.search_s(bind_base, ldap.SCOPE_SUBTREE, srch_filter )
+    if srch_res == []:
+      cprint(user + " is not a valid user", "red")
+      return False
+  return True
+
+
+#Locates the next available GID in the range.
+#Tries to find a good balance between not wasting
+#the GIDs, but not recycling ones it thinks were 
+#once in use.
+def highestGID(ldap_connection):
+  result = ldap_connection.search_s(srch_base, ldap.SCOPE_SUBTREE, "cn=*", ['gidNumber'] )
+  ordered = []
+  highest = minGID;
+  for current in range(0, len(result)):
+    currentGID = int(result[current][1]["gidNumber"][0])
+    if currentGID > minGID and currentGID < maxGID: 
+      ordered.append(currentGID)
+  ordered.sort()
+  for current in range(1, len(ordered)):
+    jump = ordered[current] - ordered[current-1]
+    if jump > skip:
+      return ordered[current-1] + 1
+    if current == len(ordered)-1 and ordered[current] + 1 < maxGID:
+        return ordered[current] + 1;
+  return -1
+
+
+def verify(values):
+  print "*" * 51
+  for x in range (0, len(attributes)):
+     if attributes[x] == "memberUid":
+       values[x] = str(values[x]).translate(None, "[']") 
+     whitespace = " " * (20-len(attributes[x])-len(str(x+1)))
+     print(whitespace+attributes[x]+": "+str(values[x]))
+  print "*" * 51
+  return yesNo("Does this look correct?: ")
+
+
+
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+password = getpass.getpass()
+ldap_conn=ldap.initialize(server)
+ldap_conn.start_tls_s()
+try:
+  ldap_conn.bind_s("uid="+username+","+bind_base,password)
+except (ldap.INVALID_CREDENTIALS, ldap.UNWILLING_TO_PERFORM):
+  cprint("Couldn't connect to "+server+". Invalid Credentials", "red")
+  sys.exit(1)
+
+while 1:
+  new_group = raw_input("Group Name: ")
+  if " " in new_group:
+    cprint("Group names cannot have spaces", "red")
+    continue
+  srch_filter = '(cn='+new_group+')'
+  result = ldap_conn.search_s(srch_base, ldap.SCOPE_SUBTREE, srch_filter, attributes )
+  if result != []:
+    cprint("Group already exists", "red")
+    continue
+  while 1:
+    member_list = raw_input("Group Members: ")
+    members = filter(None, member_list.replace(" ", "").split(","))
+    if checkValidity(members, ldap_conn): break
+  while 1:
+    owner = raw_input("Owner: ")
+    owner = owner.lower()
+    if "uid=" not in owner and bind_base not in owner:
+      owner = "uid="+owner+","+bind_base
+    elif ("uid=" in owner) != (bind_base in owner): #XOR
+      cprint("Invalid user name format", "red")
+      continue
+    if checkValidity(owner.split("=")[1].split(",")[0].split(","), ldap_conn): break
+  while 1: 
+    ttl = raw_input("ttl: ")
+    if ttl.isdigit() or ttl == "": break
+    else: cprint("ttl must be a digit")
+  description = raw_input("Description: ")
+  gid = highestGID(ldap_conn)
+  if gid == -1:
+    cprint("ERROR: No available GIDs.", "red")
+    cprint("Consider lowering the skip or increasing the range.", "red")
+    sys.exit(1)
+  values = [new_group, gid, members, owner, ttl, description]
+  if not verify(values):
+    cprint("Starting over...", "yellow")
+    continue
+
+
+  #Total edge case
+  currentGID = ldap_conn.search_s(srch_base, ldap.SCOPE_SUBTREE, "gidNumber="+str(gid), ['gidNumber'])
+  if currentGID != []:
+    cprint("GID has been assigned since it was pulled.", "yellow")
+    gid = highestGID(ldap_conn)
+    if gid == -1:
+      cprint("ERROR: No available GIDs.", "red")
+      cprint("Consider lowering the skip or increasing the range.", "red")
+      sys.exit(1)
+    cprint("Now using gid " + str(gid), "yellow")
+
+
+  data = [
+      ('objectclass', ['posixGroup', 'top', 'cadeGroup']),
+      ('cn', [new_group]),
+      ('gidNumber', [str(gid)]),
+      ('owner', [owner])
+      ]
+  if str(members) != "[]":
+    data.append(('memberUid', members))
+  if ttl != "":
+    data.append(('ttl', [str(ttl)]))
+  if description != "":
+    data.append(('description', [description]))
+  dn = 'cn='+new_group+','+srch_base
+  try:
+    ldap_conn.add_s(dn, data)
+  except ldap.INSUFFICIENT_ACCESS:
+    cprint("Insufficient Access", "red")
+    sys.exit(1)
+  except ldap.INVALID_SYNTAX:
+    cprint("Invalid Syntax", "red")
+    sys.exit(1)
+  cprint("Group created", "cyan")
+  if not yesNo("Would you like to create another group?: "):
+    sys.exit(0)
+

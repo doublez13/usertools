@@ -1,0 +1,217 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+import ldap
+import getpass
+import sys
+import os
+import readline
+import signal
+import crypt
+import random
+import string
+import cracklib
+import re
+
+server     = 'ldap://ldap.eng.utah.edu'
+bind_base  = 'ou=people,o=eng.utah.edu'
+srch_base  = 'ou=people,o=eng.utah.edu'
+username   = os.getenv('USER')
+attributes = ['uid',
+              'userPassword', 
+              'uidNumber', 
+              'gidNumber', 
+              'cn', 
+              'gecos', 
+              'homeDirectory', 
+              'loginShell', 
+              'staffShell', 
+              'department', 
+              'status', 
+              'uuid', 
+              'cardNumber',
+              'ssn',
+              'drink',
+              'doorSound',
+              'remotePassword']
+
+
+def sig_handler(signal, frame):
+      print '\n'
+      sys.exit(0)
+
+
+def yesNo(question):
+  valid_yes = set([ 'Y', 'y', "Yes", "yes", '1'])
+  valid_no = set([ 'N', 'n', "No", "no", '0'])
+  while 1:
+    answer = raw_input(question)
+    if answer in valid_yes:
+      return True
+    elif answer in valid_no:
+      return False
+
+
+def selection():
+  op=""
+  while op=="":
+    valid_chars = set(['C', 'c', 'D', 'd', 'E', 'e'])
+    op = raw_input("Selection? ")
+    if op.isdigit() and int(op) <= len(attributes) and int(op) > 0:
+      return op
+    elif op in valid_chars:
+      return op
+    else:
+      op=""
+
+
+def selectUser():
+  mod_user = raw_input('Lookup entry for username (blank to end): ')
+  if mod_user == "":
+    sys.exit(0)
+  return mod_user
+
+
+def modifyAttribute(user, attribute, ldap_connection, pre_val):
+  readline.set_startup_hook(lambda: readline.insert_text(pre_val))
+  value = raw_input(attribute+": ")
+  readline.set_startup_hook()
+  if yesNo("Are you sure you want to change " + attribute + " to value: '" + value +"'?: "):
+    user_base = "uid="+user+","+srch_base
+    mod_attrs = [()]
+    if value == pre_val:
+      return
+    elif value == "":
+      mod_attrs = [(ldap.MOD_DELETE, attribute, pre_val)]
+    else:
+      mod_attrs = [(ldap.MOD_REPLACE, attribute, value)]
+    try:
+      ldap_connection.modify_s(user_base, mod_attrs)
+    except ldap.INSUFFICIENT_ACCESS:
+      print "Insufficient Access"
+
+
+def modifyPassword(user, attribute, ldap_connection):
+  user_base = "uid="+user+","+srch_base
+  while 1:
+    new_pw1 = getpass.getpass("Please enter a password: ")
+    new_pw2 = getpass.getpass("Please confirm password: ")
+    if new_pw1 != new_pw2:
+      print "Passwords don't match"
+      continue
+    if chkPassStrength(new_pw1) == False:
+      continue
+    chars = string.ascii_letters + string.digits
+    salt = "".join(random.choice(chars) for i in range(8))
+    pw_hash = "{crypt}"+crypt.crypt(new_pw1, salt) 
+    mod_attrs = [(ldap.MOD_REPLACE, attribute, pw_hash)]
+    ldap_connection.modify_s(user_base, mod_attrs)
+    break
+
+
+def chkPassStrength(pw_to_check):
+  try:
+    cracklib.FascistCheck(pw_to_check)
+  except ValueError, e:
+    print "Error: " + str(e)
+    return False
+  if len(pw_to_check) < 8:
+    print "Error: password too short"
+    return False
+  elif pw_to_check.islower() or pw_to_check.isupper():
+    print "Error: password must contain upper and lower case characters"
+    return False
+  elif not bool(re.compile('\d').search(pw_to_check)):
+    print "Error: password must contain digits"
+    return False
+  return True
+
+
+def deleteUser(user, ldap_connection):
+  user_base = "uid="+user+","+srch_base
+  if yesNo("Are you sure you want to delete user: " + user +"?: "):
+    try:
+      ldap_connection.delete_s(user_base)
+    except ldap.INSUFFICIENT_ACCESS:
+      print "Regular users cannot delete their accounts"
+      return
+    print "User " + user + " deleted"
+    print "This does not delete the users home directory or any other files"
+
+
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+password = getpass.getpass()
+ldap_conn=ldap.initialize(server)
+ldap_conn.start_tls_s()
+try:
+  ldap_conn.bind_s("uid="+username+","+bind_base,password)
+except (ldap.INVALID_CREDENTIALS, ldap.UNWILLING_TO_PERFORM):
+  print "Couldn't connect to "+server+". Invalid Credentials"
+  sys.exit(1)
+
+
+if len(sys.argv) < 2:
+  mod_user = selectUser()
+else:
+  mod_user = sys.argv[1]
+
+
+while 1:
+  filter = '(uid='+mod_user+')'
+  result = ldap_conn.search_s(srch_base, ldap.SCOPE_SUBTREE, filter, attributes )
+  if result == []:
+    print "Unable to find LDAP entry for " + mod_user + '\n'
+    mod_user = selectUser() 
+    continue
+  else:
+    print "Found LDAP entry for " + mod_user + '\n'
+
+
+  keys   = result[0][1].keys()
+  values = []
+
+  for attribute in attributes:
+    values.append( result[0][1][attribute][0] if attribute in keys else "")
+  for x in range (0, len(attributes)):
+    whitespace = " " * (20-len(attributes[x])-len(str(x+1)))
+    print(str(x+1)+")"+whitespace+attributes[x]+": "+values[x])
+  print("D)elete this user")
+  print("C)hange user")
+  print("E)xit\n")
+
+
+  operation = selection()
+
+  if operation == 'E' or operation == 'e':
+    if yesNo("Are you sure you want to quit? "):
+      sys.exit(0)
+  elif operation == 'C' or operation == 'c':
+    mod_user = selectUser()
+  elif operation == 'D' or operation == 'd':
+      deleteUser(mod_user, ldap_conn)
+  else:
+    attribute=attributes[int(operation)-1]
+    if "Password" in attribute:
+      modifyPassword(mod_user, attribute, ldap_conn)
+    else:
+      old_value = values[attributes.index(attribute)]
+      modifyAttribute(mod_user, attribute, ldap_conn, old_value)
+  print '\n'

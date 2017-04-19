@@ -1,0 +1,88 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+import ldap
+import sys
+import signal
+from termcolor import cprint
+
+server     = 'ldap://ldap.eng.utah.edu'
+srch_base  = 'ou=people,o=eng.utah.edu'
+attributes = ['uid',
+              'uidNumber', 
+              'gidNumber', 
+              'gecos', 
+              'homeDirectory', 
+              'loginShell']
+
+
+def sig_handler(signal, frame):
+      print '\n'
+      sys.exit(0)
+
+
+def selectUser():
+  srch_user = raw_input('Lookup entry for username (blank to end): ')
+  if srch_user == "":
+    sys.exit(0)
+  return srch_user
+
+
+def searchUser(srch_filter, ldap_connection):
+  result = ldap_connection.search_s(srch_base, ldap.SCOPE_SUBTREE, srch_filter, attributes )
+  found = False
+  for entry in result:
+    found = True
+    keys   = entry[1].keys()
+    values = []
+    for attribute in attributes:
+      values.append( entry[1][attribute][0] if attribute in keys else "")
+    for x in range (0, len(attributes)):
+      whitespace = " " * (20-len(attributes[x])-len(str(x+1)))
+      print(whitespace+attributes[x]+": "+values[x])
+    print "-" * 51
+  return found
+
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+ldap_conn=ldap.initialize(server)
+
+if len(sys.argv) < 2:
+  srch_user = selectUser()
+else:
+  srch_user = sys.argv[1]
+
+
+cprint("*" * 51 + '\r', "blue")
+cprint("SEARCHING NAMES", "yellow")
+filter = '(cn=*'+srch_user+'*)'
+s1 = searchUser(filter, ldap_conn)
+cprint("*" * 51 + '\n', "blue")
+
+cprint("SEARCHING USERNAMES", "yellow")
+filter = '(uid=*'+srch_user+'*)'
+s2 = searchUser(filter, ldap_conn)
+cprint("*" * 51 + '\n', "blue")
+
+cprint("SEARCHING UIDS", "yellow")
+filter = '(uuid='+srch_user+')'
+s3 = searchUser(filter, ldap_conn)
+cprint("*" * 51 + '\n', "blue")
+if not s1 and not s2 and not s3:
+  cprint(" " * 17 + "No users found", "red")

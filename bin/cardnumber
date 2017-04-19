@@ -1,0 +1,74 @@
+#!/usr/local/stow/python/amd64_linux26/python-2.7.3/bin/python
+#
+# Copyright (C) 2015 Zane Zakraisek
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+import ldap
+import getpass
+import sys
+import os
+import readline
+import signal
+import string
+from termcolor import cprint
+
+server     = 'ldap://ldap.eng.utah.edu'
+bind_base  = 'ou=people,o=eng.utah.edu'
+srch_base  = 'ou=people,o=eng.utah.edu'
+username   = os.getenv('USER')
+attributes = ['cardNumber']
+
+
+def sig_handler(signal, frame):
+      print '\n'
+      sys.exit(0)
+
+def modifyCard(user, ldap_connection):
+  cprint("\nThe 16 digit card number is located near the bottom of the card.", "yellow")
+  user_base = "uid="+user+","+srch_base
+  while 1:
+    new_cn = raw_input("Card Number: ")
+    if chkCardFormat(new_cn) == False:
+      continue
+    mod_attrs = [(ldap.MOD_REPLACE, attributes[0], new_cn)]
+    ldap_connection.modify_s(user_base, mod_attrs)
+    break
+
+def chkCardFormat(cardNumber):
+  if cardNumber.isdigit() and len(cardNumber) == 16:
+    return True
+  else:
+    cprint("The card number must be 16 numbers.", "red")
+    return False
+
+
+
+signal.signal(signal.SIGINT, sig_handler )
+
+cprint("This program allows you to set or reset your", "cyan")
+cprint("card number for the CADE and Engman labs.", "cyan")
+
+password = getpass.getpass("Password: ")
+ldap_conn=ldap.initialize(server)
+ldap_conn.start_tls_s()
+try:
+  ldap_conn.bind_s("uid="+username+","+bind_base,password)
+except (ldap.INVALID_CREDENTIALS, ldap.UNWILLING_TO_PERFORM):
+  cprint("Couldn't connect to " + server + ". Invalid Credentials", "red")
+  sys.exit(1)
+
+modifyCard(username, ldap_conn)
+cprint("Card Number Successfully Updated\n", "cyan")
